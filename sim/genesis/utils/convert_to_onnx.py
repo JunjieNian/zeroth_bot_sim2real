@@ -21,16 +21,27 @@ with open(args.cfg, 'rb') as f:
     print(f"Loaded config: {cfgs}")
 
 # 加载模型
-model_dict = torch.load(args.model, weights_only=True)
+checkpoint = torch.load(args.model, map_location=torch.device("cpu"))
+model_state_dict = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
+obs_norm_state_dict = checkpoint.get("obs_norm_state_dict")
 
 # 创建继承自ActorCritic的模型类
 from rsl_rl.modules import ActorCritic
 
 class ExportModel(ActorCritic):
+    def __init__(self, *model_args, obs_mean=None, obs_std=None, **model_kwargs):
+        super().__init__(*model_args, **model_kwargs)
+        if obs_mean is not None and obs_std is not None:
+            self.register_buffer("obs_mean", obs_mean)
+            self.register_buffer("obs_std", obs_std)
+        else:
+            self.obs_mean = None
+            self.obs_std = None
+
     def forward(self, obs):
-        # 使用actor网络生成动作
-        actions = self.actor(obs)
-        return actions
+        if self.obs_mean is not None and self.obs_std is not None:
+            obs = (obs - self.obs_mean) / torch.clamp(self.obs_std, min=1e-6)
+        return self.actor(obs)
 
 # 根据配置创建模型实例        
 model = ExportModel(
@@ -40,11 +51,13 @@ model = ExportModel(
     actor_hidden_dims=cfgs[4]['policy']['actor_hidden_dims'],
     critic_hidden_dims=cfgs[4]['policy']['critic_hidden_dims'],
     activation='elu',
-    init_noise_std=cfgs[4]['policy']['init_noise_std']
+    init_noise_std=cfgs[4]['policy']['init_noise_std'],
+    obs_mean=obs_norm_state_dict["_mean"] if obs_norm_state_dict else None,
+    obs_std=obs_norm_state_dict["_std"] if obs_norm_state_dict else None,
 )
 
 # 加载模型参数
-model.load_state_dict(model_dict['model_state_dict'])
+model.load_state_dict(model_state_dict)
 model.eval()
 
 # 创建示例输入
